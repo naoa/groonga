@@ -25,6 +25,7 @@
 #endif /* HAVE_CONFIG_H */
 
 #include <groonga/plugin.h>
+#include "grn_db.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -291,7 +292,8 @@ func_time_classify_raw(grn_ctx *ctx,
     break;
   case GRN_UVECTOR :
     {
-      if (time->header.domain != GRN_DB_TIME) {
+      if (time->header.domain != GRN_DB_TIME &&
+          grn_type_id_is_builtin(ctx, time->header.domain)) {
         grn_obj inspected;
 
         GRN_TEXT_INIT(&inspected, 0);
@@ -305,7 +307,7 @@ func_time_classify_raw(grn_ctx *ctx,
                          GRN_TEXT_VALUE(&inspected));
         GRN_OBJ_FIN(ctx, &inspected);
         return NULL;
-      } else {
+      } else if (time->header.domain == GRN_DB_TIME) {
         classed_time = grn_plugin_proc_alloc(ctx,
                                              user_data,
                                              time->header.domain,
@@ -342,6 +344,74 @@ func_time_classify_raw(grn_ctx *ctx,
           }
           GRN_OBJ_FIN(ctx, &buf);
 
+          return classed_time;
+        }
+      } else {
+        grn_obj *domain;
+
+        domain = grn_ctx_at(ctx, time->header.domain);
+        if (domain->header.domain != GRN_DB_TIME) {
+          grn_obj inspected;
+
+          GRN_TEXT_INIT(&inspected, 0);
+          grn_inspect(ctx, &inspected, time);
+          GRN_PLUGIN_ERROR(ctx, GRN_INVALID_ARGUMENT,
+                           "%s(): "
+                           "the first argument must be a time: "
+                           "<%.*s>",
+                           function_name,
+                           (int)GRN_TEXT_LEN(&inspected),
+                           GRN_TEXT_VALUE(&inspected));
+          GRN_OBJ_FIN(ctx, &inspected);
+          return NULL;
+        }
+
+        classed_time = grn_plugin_proc_alloc(ctx,
+                                             user_data,
+                                             time->header.domain,
+                                             GRN_OBJ_VECTOR);
+        if (!classed_time) {
+          return NULL;
+        }
+
+        {
+          unsigned int i, n_elements;
+          grn_obj buf;
+
+          n_elements = grn_uvector_size(ctx, time);
+          GRN_TIME_INIT(&buf, 0);
+          for (i = 0; i < n_elements; i++) {
+            grn_id id;
+            int64_t classed_time_raw;
+            grn_bool is_classified;
+
+            id = grn_uvector_get_element(ctx, time, i, NULL);
+            if (id == GRN_ID_NIL) {
+              continue;
+            }
+
+            GRN_BULK_REWIND(&buf);
+            grn_table_get_key2(ctx, domain, id, &buf) ;
+
+            is_classified = classify_time_value_raw(ctx,
+                                                    &buf,
+                                                    unit,
+                                                    interval_raw,
+                                                    &classed_time_raw,
+                                                    function_name);
+            if (!is_classified) {
+              GRN_OBJ_FIN(ctx, &buf);
+              return NULL;
+            }
+
+            id = grn_table_add(ctx, domain,
+                               &classed_time_raw, sizeof(int64_t), NULL);
+            if (id != GRN_ID_NIL) {
+              GRN_RECORD_PUT(ctx, classed_time, id);
+            }
+          }
+
+          GRN_OBJ_FIN(ctx, &buf);
           return classed_time;
         }
       }
